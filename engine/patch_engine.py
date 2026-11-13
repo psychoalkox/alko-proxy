@@ -29,6 +29,7 @@ def patch_connection(folder: Path) -> None:
 
 
 def patch_core(source: str) -> str:
+    source = source.replace(WEB_SERVER, WEB_SERVER.replace(', *server_', ''), 1)
     if INCLUDE in source:
         if POLL in source:
             return source
