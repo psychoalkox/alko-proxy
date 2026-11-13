@@ -14,26 +14,13 @@ index 1da1839..7017585 100644
          return Result::Success;
      }
  };
-diff --git a/src/core/core.cpp b/src/core/core.cpp
-index 4dd3d5e..fb8bf02 100644
---- a/src/core/core.cpp
-+++ b/src/core/core.cpp
-@@ -27,7 +27,7 @@ Core::Core()
-
-     server_ = std::make_unique<network::Server>(config_, dispatcher_);
-     client_ = std::make_unique<network::Client>(config_, dispatcher_);
--    web_server_ = std::make_unique<WebServer>(config_, dispatcher_, *client_, *server_);
-+    web_server_ = std::make_unique<WebServer>(config_, dispatcher_, *client_);
-
-     packet::register_all_packets();
-
 diff --git a/src/core/web_server.cpp b/src/core/web_server.cpp
 index 47d6703..87da64b 100644
 --- a/src/core/web_server.cpp
 +++ b/src/core/web_server.cpp
 @@ -1,196 +1,174 @@
  #include "web_server.hpp"
-
+ 
 -#include <fmt/format.h>
 -#include <magic_enum/magic_enum.hpp>
 +#include <charconv>
@@ -42,7 +29,7 @@ index 47d6703..87da64b 100644
 +#include <stdexcept>
 +#include <utility>
  #include <spdlog/spdlog.h>
-
+ 
 -#include "../utils/text_parse.hpp"
 -// ReSharper disable once CppUnusedIncludeDirective
 -#include "../utils/formatter/text_parse_formatter.hpp"
@@ -118,7 +105,7 @@ index 47d6703..87da64b 100644
 +    if (!https_server_.is_valid()) {
 +        throw std::runtime_error{ "HTTPS credentials are missing or invalid. See the ALKO Windows connection setup." };
      }
-
+ 
 -    dispatcher_.appendListener(event::Type::ClientConnect, [this](const event::Event& e) { on_client_connect(e); });
 -    dispatcher_.appendListener(event::Type::ClientDisconnect, [this](const event::Event& e) { on_client_disconnect(e); });
 +    https_server_.set_logger([](const httplib::Request& req, const httplib::Response& res) {
@@ -136,7 +123,7 @@ index 47d6703..87da64b 100644
 +    if (!https_server_.bind_to_port("127.0.0.1", 443)) {
 +        throw std::runtime_error{ "Failed to bind HTTPS to 127.0.0.1:443" };
 +    }
-
+ 
 -    spdlog::info("HTTPS server listening on port 443");
 -    server_thread_ = std::thread{ &WebServer::listen_internal, this };
 +    dispatcher.appendListener(event::Type::ClientConnect, [this](const event::Event&) {
@@ -145,14 +132,14 @@ index 47d6703..87da64b 100644
 +    spdlog::info("HTTPS server listening on 127.0.0.1:443");
 +    server_thread_ = std::thread{ [this] { https_server_.listen_after_bind(); } };
  }
-
+ 
  WebServer::~WebServer()
  {
      https_server_.stop();
 -    server_thread_.join();
 +    if (server_thread_.joinable()) server_thread_.join();
  }
-
+ 
 -void WebServer::setup_server()
 +std::string_view WebServer::bootstrap_state() const
  {
@@ -186,7 +173,7 @@ index 47d6703..87da64b 100644
 +    default: return "waiting";
 +    }
  }
-
+ 
 -void WebServer::listen_internal()
 +void WebServer::on_bootstrap(const httplib::Request& req, httplib::Response& res)
  {
@@ -322,7 +309,7 @@ index 47d6703..87da64b 100644
 +        spdlog::warn("Upstream bootstrap returned HTTP {}", response->status);
 +        return fail("Upstream rejected the bootstrap request");
 +    }
-
+ 
 -    https_server_.listen_after_bind();
 +    auto body = response->body;
 +    Endpoint endpoint;
@@ -336,7 +323,7 @@ index 47d6703..87da64b 100644
 +    bootstrap_ = Bootstrap::Ready;
 +    res.set_content(std::move(body), response->get_header_value("Content-Type", "text/html"));
  }
-
+ 
 -void WebServer::on_client_connect(const event::Event& e)
 +void WebServer::on_client_connect()
  {
@@ -379,7 +366,7 @@ index 6b1c447..2f1e19c 100644
 +#include <optional>
 +#include <string_view>
  #include <thread>
-
+ 
  #include "../core/config.hpp"
 @@ -14,29 +18,31 @@ public:
      WebServer(
@@ -391,7 +378,7 @@ index 6b1c447..2f1e19c 100644
      );
      ~WebServer();
 +    [[nodiscard]] std::string_view bootstrap_state() const;
-
+ 
  private:
 -    void setup_server();
 -    void listen_internal();
@@ -400,17 +387,17 @@ index 6b1c447..2f1e19c 100644
 -    void on_client_disconnect(const event::Event& e);
 +    void on_bootstrap(const httplib::Request& req, httplib::Response& res);
 +    void on_client_connect();
-
+ 
  private:
      Config& config_;
 -    event::Dispatcher& dispatcher_;
      network::Client& client_;
 -    network::Server& server_;
-
+ 
      network::DnsResolver dns_resolver_;
      httplib::SSLServer https_server_;
      std::thread server_thread_;
-
+ 
 -    std::string pending_address_;
 -    uint16_t pending_port_;
 +    enum class Bootstrap { Waiting, Requested, Failed, Ready };
@@ -430,14 +417,14 @@ index 1a17647..c0d98eb 100644
 +++ b/src/network/client.cpp
 @@ -45,7 +45,9 @@ bool Client::connect(const std::string& host, std::uint16_t port)
      }
-
+ 
      ENetAddress address{};
 -    enet_address_set_host(&address, ENET_ADDRESS_TYPE_IPV4, host.c_str());
 +    if (enet_address_set_host(&address, ENET_ADDRESS_TYPE_IPV4, host.c_str()) != 0) {
 +        return false;
 +    }
      address.port = port;
-
+ 
      peer_ = enet_host_connect(host_, &address, 2, 0);
 diff --git a/src/network/dns_resolver.cpp b/src/network/dns_resolver.cpp
 index 8882aff..b1bafd9 100644
@@ -445,10 +432,10 @@ index 8882aff..b1bafd9 100644
 +++ b/src/network/dns_resolver.cpp
 @@ -45,7 +45,6 @@ DnsResult DnsResolver::resolve_domain(const std::string& domain) const
      };
-
+ 
      httplib::Client cli{ fmt::format("https://{}", provider_->get_host()) };
 -    cli.enable_server_certificate_verification(false);
-
+ 
      cli.set_connection_timeout(5);
      cli.set_read_timeout(10);
 diff --git a/src/network/server.cpp b/src/network/server.cpp
@@ -464,5 +451,5 @@ index f6bc51f..978b7ef 100644
 +        return nullptr;
 +    }
      address.port = port;
-
+ 
      ENetHost* host{ enet_host_create(ENET_ADDRESS_TYPE_IPV4, &address, 1, 2, 0, 0) };

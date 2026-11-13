@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 INCLUDE = '#include "alko_bridge.hpp"'
 INSTALL = 'alko_bridge::install_emit(*script_engine_);'
 INIT = 'alko_bridge::Bridge alko_bridge;'
+WEB_SERVER = 'std::make_unique<WebServer>(config_, dispatcher_, *client_, *server_)'
 LEGACY_POLL = 'alko_bridge.poll(*script_engine_);'
 POLL = ('alko_bridge.poll(*script_engine_, server_->is_connected(), client_->is_connected(),\n'
         '                         web_server_->bootstrap_state());')
