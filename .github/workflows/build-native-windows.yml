@@ -1,0 +1,106 @@
+name: Build ALKO native GTProxy engine (Windows)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Fetch ALKO project
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC compiler
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify tools and install Conan
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake --version
+          git --version
+          python -m pip install 'conan>=2,<3'
+          if ($LASTEXITCODE -ne 0) { throw 'Failed installing Conan' }
+          conan --version
+          conan profile detect --force
+          if ($LASTEXITCODE -ne 0) { throw 'Conan could not detect MSVC' }
+
+      - name: Clone auditable upstream C++ network engine and submodules
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone --depth 1 --recurse-submodules https://github.com/vinskeeper/GTProxy.git vendor/GTProxy
+          if ($LASTEXITCODE -ne 0) { throw 'Upstream source could not be fetched' }
+          git -C vendor/GTProxy rev-parse HEAD | Set-Content upstream-commit.txt
+
+      - name: Apply ALKO dashboard bridge and feature modules
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python engine/patch_engine.py vendor/GTProxy
+          if ($LASTEXITCODE -ne 0) { throw 'Bridge patch failed; upstream API may have changed' }
+          python -m py_compile engine/patch_engine.py
+
+      - name: Test ALKO Lua download fallback and cache handling
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency preparation tests failed' }
+
+      - name: Prepare Lua from verified tar.gz and build locally (Release + Debug)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\engine\PREPARE_LUA_WINDOWS.ps1 -ProjectRoot (Get-Location).Path
+          if ($LASTEXITCODE -ne 0) { throw 'Local Lua source preparation failed' }
+          if (-not $env:ALKO_LUA_ARCHIVE) { throw 'Lua archive was not exported to this step' }
+          Write-Host 'Lua ready; the archive path has also been written to GITHUB_ENV.'
+
+      - name: Configure native C++ project
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Explicitly configure only Release for the multi-config MSVC generator.
+          cmake -S vendor/GTProxy -B vendor/GTProxy/build -G 'Visual Studio 17 2022' -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CONFIGURATION_TYPES=Release -DBUILD_TESTING=OFF
+          if ($LASTEXITCODE -ne 0) { throw 'CMake / Conan configuration failed' }
+
+      - name: Compile the native networking engine
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake --build vendor/GTProxy/build --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Native proxy build failed' }
+
+      - name: Package engine with non-system DLL dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\engine\PACKAGE_ENGINE_WINDOWS.ps1 -ProjectRoot (Get-Location).Path
+          if (-not (Test-Path 'ALKO-native-engine/Proxy.exe')) { throw 'Portable engine was not produced' }
+          @'
+          ALKO native engine: compiled Windows x64 executable.
+          VC++ runtime on target PC: https://aka.ms/vc14/vc_redist.x64.exe
+          See ENGINE_DLL_REPORT.txt for resolved and unresolved DLL imports.
+          Compiled does not mean Growtopia 5.61 login is verified or ban-safe.
+          '@ | Set-Content 'ALKO-native-engine/BUILD_STATUS.txt'
+          Get-ChildItem 'ALKO-native-engine' -Force | Format-Table Name,Length
+
+      - name: Upload compiled engine (only if successful)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ALKO-native-GTProxy-Windows-x64
+          path: ALKO-native-engine/
+          if-no-files-found: error
+          retention-days: 14
