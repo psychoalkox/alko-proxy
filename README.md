@@ -12,13 +12,13 @@ See [Local Windows build](LOCAL_INSTALL_WINDOWS.md) to compile from source and [
 
 ---
 
-# ALKO Proxy Standalone â€” v0.2 (Windows x64)
+# ALKO Proxy Standalone — v0.2 (Windows x64)
 
 ## Start in one click
 1. Double-click `ALKOProxy.exe` on Windows 10/11 x64.
 2. The dashboard opens in your default browser at `http://127.0.0.1:8765`.
-3. Use **World scanner â†’ Import JSON** to try the offline scanner. Open `examples/world_scan.json` in Notepad, copy its contents, and paste into the app.
-4. Close the application from **Settings â†’ Quit ALKO Proxy** (closing the browser tab alone does not stop the local server).
+3. Use **World scanner → Import JSON** to try the offline scanner. Open `examples/world_scan.json` in Notepad, copy its contents, and paste into the app.
+4. Close the application from **Settings → Quit ALKO Proxy** (closing the browser tab alone does not stop the local server).
 
 No Python, Node, Go, command prompt, game account, or other installation is required to run the **dashboard**. Windows may display a reputation warning because the open-source binary is unsigned; don't override security warnings unless you trust the package and have inspected it.
 

@@ -68,7 +68,7 @@ func validateCommand(s string) (string, error) {
 		id, e1 := strconv.Atoi(p[1])
 		count, e2 := strconv.Atoi(p[2])
 		if e1 != nil || e2 != nil || id <= 0 || id >= 1000000 || count < 1 || count > 200 {
-			return "", errors.New("Item ID must be positive; amount 1â€“200")
+			return "", errors.New("Item ID must be positive; amount 1–200")
 		}
 	}
 	return s, nil
@@ -125,7 +125,7 @@ func newController(dir string) (*Controller, error) {
 			}
 		}
 	}
-	c.log("ALKO standalone dashboard started â€” native game engine not included")
+	c.log("ALKO standalone dashboard started — native game engine not included")
 	return c, nil
 }
 func (c *Controller) log(s string) { c.mu.Lock(); defer c.mu.Unlock(); c.logUnsafe(s) }
@@ -193,7 +193,7 @@ func (c *Controller) status() map[string]any {
 	} else if h, ok := c.readHeartbeat(session); ok {
 		bridge, connection, bootstrap = "online", h.Connection, h.Bootstrap
 	}
-	return map[string]any{"dashboard": "online", "engine": engine, "bridge": bridge, "connection": connection, "bootstrap": bootstrap, "target_version": "5.61", "compatibility": "UNVERIFIED â€” requires successful live test", "uptime_seconds": int(time.Since(c.started).Seconds()), "pid": pid, "workflow": wf, "queued": queued, "recent_receipts": r}
+	return map[string]any{"dashboard": "online", "engine": engine, "bridge": bridge, "connection": connection, "bootstrap": bootstrap, "target_version": "5.61", "compatibility": "UNVERIFIED — requires successful live test", "uptime_seconds": int(time.Since(c.started).Seconds()), "pid": pid, "workflow": wf, "queued": queued, "recent_receipts": r}
 }
 func (c *Controller) receipts(n int) []receipt {
 	dir := filepath.Join(c.bridgeDir, "outbox")
@@ -381,7 +381,7 @@ func (c *Controller) queue(ext, source string) (string, error) {
 		source = s + "\n"
 	} else if ext == "lua" {
 		if len(source) > 20000 || strings.TrimSpace(source) == "" {
-			return "", errors.New("Lua source must be 1â€“20,000 characters")
+			return "", errors.New("Lua source must be 1–20,000 characters")
 		}
 	} else {
 		return "", errors.New("Invalid queue type")
@@ -571,10 +571,10 @@ func (c *Controller) scanImport(m map[string]any) (map[string]any, error) {
 func (c *Controller) workflowState() WFState { c.mu.Lock(); defer c.mu.Unlock(); return c.wf }
 func (c *Controller) workflowStart(name string, steps []Step, repeat int) (WFState, error) {
 	if len(steps) < 1 || len(steps) > 30 {
-		return WFState{}, errors.New("A workflow needs 1â€“30 steps")
+		return WFState{}, errors.New("A workflow needs 1–30 steps")
 	}
 	if repeat < 1 || repeat > 20 {
-		return WFState{}, errors.New("Repeat must be 1â€“20")
+		return WFState{}, errors.New("Repeat must be 1–20")
 	}
 	for i := range steps {
 		s := &steps[i]
@@ -585,7 +585,7 @@ func (c *Controller) workflowStart(name string, steps []Step, repeat int) (WFSta
 			}
 			s.Command = cmd
 		} else if s.WaitMS < 400 || s.WaitMS > 60000 {
-			return WFState{}, errors.New("Wait must be 400â€“60,000 ms")
+			return WFState{}, errors.New("Wait must be 400–60,000 ms")
 		}
 	}
 	c.mu.Lock()
