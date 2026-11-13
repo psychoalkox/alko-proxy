@@ -1,0 +1,13 @@
+ALKO Proxy native engine v0.5 — local Windows build
+
+1. Read LOCAL_INSTALL_WINDOWS.md for build prerequisites.
+2. Extract the complete ZIP to C:\ALKOProxy.
+3. Run in PowerShell:
+
+   cd C:\ALKOProxy
+   powershell -NoProfile -ExecutionPolicy Bypass -File .\engine\SETUP_ENGINE_WINDOWS.ps1
+
+4. If successful, engine output: C:\ALKOProxy\ALKO-native-engine\Proxy.exe
+5. Dashboard is ALKOProxy.exe; set engine path in Settings.
+
+IMPORTANT: Live Growtopia 5.61 compatibility and account-ban safety remain unverified.

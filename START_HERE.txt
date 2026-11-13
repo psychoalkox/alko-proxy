@@ -1,0 +1,10 @@
+ALKO Proxy v0.5
+
+Already built dashboard: ALKOProxy.exe
+Local native engine compile: LOCAL_INSTALL_WINDOWS.md
+
+Build command (from extracted folder):
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\engine\SETUP_ENGINE_WINDOWS.ps1
+
+v0.5 fixes Conan BadZipFile on extensionless Lua tar.gz cache archives.
+It does not itself provide a tested v5.61 client connection.

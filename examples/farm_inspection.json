@@ -1,0 +1,11 @@
+{
+  "name": "Inspect farm",
+  "repeat": 2,
+  "steps": [
+    {"command": "/gscan"},
+    {"wait_ms": 1500},
+    {"command": "/dropped"},
+    {"wait_ms": 1500},
+    {"command": "/farmreport"}
+  ]
+}
