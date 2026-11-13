@@ -1,9 +1,8 @@
 <#
   Package ALKO native engine and scan Windows DLL imports.
-  Requires a successful Release build. With an MSVC developer environment,
-  dumpbin /DEPENDENTS is used to resolve runtime DLLs from the build tree
-  and Conan's package cache. This avoids shipping only Proxy.exe.
-  VC++ runtime is installed separately via Microsoft's supported redistributable.
+  Run in an x64 Visual Studio developer shell after building Release.
+  Resolve OpenSSL from the SDK selected by CMake and the VC++ runtime from
+  the toolchain's redistributable directory.
 #>
 param(
   [string]$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path,
@@ -13,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 $source = Join-Path $ProjectRoot 'vendor\GTProxy'
 $build = Join-Path $source 'build'
 $out = Join-Path $ProjectRoot 'ALKO-native-engine'
+$dumpbin = (Get-Command 'dumpbin.exe' -ErrorAction Stop).Source
 if (-not $BuiltExe) {
   $proxies = @(Get-ChildItem -LiteralPath $build -Recurse -Filter 'Proxy.exe' -File -ErrorAction Stop)
   $release = @($proxies | Where-Object { $_.FullName -match '[\\/]Release[\\/]' })
@@ -34,11 +34,26 @@ if (Test-Path -LiteralPath $config) { Copy-Item -LiteralPath $config -Destinatio
 $commitFile = Join-Path $ProjectRoot 'upstream-commit.txt'
 if (Test-Path -LiteralPath $commitFile) { Copy-Item -LiteralPath $commitFile -Destination (Join-Path $out 'upstream-commit.txt') -Force }
 
-# Candidate non-system DLLs: actual Release build files and Conan package bin directories.
-# Do NOT copy arbitrary Windows or MSVC system DLLs; use the supported VC++ redist.
+# Find the SDK used at configure time, even when it isn't in the Conan cache.
+$cache = Join-Path $build 'CMakeCache.txt'
+$opensslRoot = $null
+if (Test-Path -LiteralPath $cache) {
+  $opensslInclude = Select-String -LiteralPath $cache -Pattern '^OPENSSL_INCLUDE_DIR:PATH=(.+)$'
+  if ($opensslInclude) {
+    $opensslRoot = Split-Path $opensslInclude.Matches[0].Groups[1].Value
+    Write-Host "OpenSSL SDK selected by CMake: $opensslRoot"
+  }
+}
+$crtDirs = @()
+if ($env:VCToolsRedistDir) {
+  $crtDirs = @(Get-ChildItem -LiteralPath (Join-Path $env:VCToolsRedistDir 'x64') -Directory -Filter 'Microsoft.VC*.CRT')
+}
+
+# Candidate DLLs for dependencies supplied by the build or Conan.
 $candidates = @{}
-$roots = @($build)
-$conanRoot = Join-Path $env:USERPROFILE '.conan2\p'
+$roots = @()
+$conanHome = if ($env:CONAN_HOME) { $env:CONAN_HOME } else { Join-Path $env:USERPROFILE '.conan2' }
+$conanRoot = Join-Path $conanHome 'p'
 if (Test-Path -LiteralPath $conanRoot) { $roots += $conanRoot }
 foreach ($rootPath in $roots) {
   foreach ($dll in @(Get-ChildItem -LiteralPath $rootPath -Recurse -File -Filter '*.dll' -ErrorAction SilentlyContinue)) {
@@ -51,11 +66,10 @@ $report = [System.Collections.Generic.List[string]]::new()
 $report.Add("Native ALKO engine runtime dependency report (Windows x64)")
 $report.Add("Built executable: $BuiltExe")
 $report.Add("Run-time target: $(Join-Path $out 'Proxy.exe')")
-$report.Add('VC++ runtime: install https://aka.ms/vc14/vc_redist.x64.exe on the target PC')
 $report.Add('')
 
 function Import-Dlls([string]$binary) {
-  $lines = & dumpbin.exe /DEPENDENTS $binary 2>&1
+  $lines = & $dumpbin /DEPENDENTS $binary 2>&1
   if ($LASTEXITCODE -ne 0) { throw "dumpbin failed for $binary : $lines" }
   $imports = [System.Collections.Generic.List[string]]::new()
   foreach ($line in $lines) {
@@ -66,66 +80,57 @@ function Import-Dlls([string]$binary) {
   return @($imports | Sort-Object -Unique)
 }
 
-$dumpbin = Get-Command 'dumpbin.exe' -ErrorAction SilentlyContinue
-if (-not $dumpbin) {
-  $report.Add('WARNING: dumpbin.exe unavailable; scanning only local build DLLs.')
-  foreach ($dll in @(Get-ChildItem -LiteralPath (Split-Path $BuiltExe) -Filter '*.dll' -File -ErrorAction SilentlyContinue)) {
-    Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $out $dll.Name) -Force
-    $report.Add("COPIED $($dll.Name) from $($dll.FullName)")
-  }
-} else {
-  $visited = @{}
-  $queued = [System.Collections.Generic.Queue[string]]::new()
-  $queued.Enqueue((Join-Path $out 'Proxy.exe'))
-  $missing = [System.Collections.Generic.List[string]]::new()
-  $runtimePrefixes = @('msvcp', 'vcruntime', 'concrt', 'vcomp', 'ucrtbase')
-  while ($queued.Count -gt 0) {
-    $binary = $queued.Dequeue()
-    $key = $binary.ToLowerInvariant()
-    if ($visited.ContainsKey($key)) { continue }
-    $visited[$key] = $true
-    $report.Add("INSPECT $binary")
-    foreach ($dllName in @(Import-Dlls $binary)) {
-      $name = $dllName.ToLowerInvariant()
+$queued = [System.Collections.Generic.Queue[string]]::new()
+$queued.Enqueue((Join-Path $out 'Proxy.exe'))
+$checked = @{}
+$missing = [System.Collections.Generic.List[string]]::new()
+$hasOpenSSL = $false
+while ($queued.Count -gt 0) {
+  $binary = $queued.Dequeue()
+  $report.Add("INSPECT $(Split-Path -Leaf $binary)")
+  foreach ($dllName in @(Import-Dlls $binary)) {
+    if ($checked.ContainsKey($dllName)) { continue }
+    $checked[$dllName] = $true
+    $preferred = $null
+    $buildLocal = Join-Path (Split-Path $BuiltExe) $dllName
+    if ($dllName -match '^(api|ext)-ms-win-') {
+      $report.Add("WINDOWS API SET $dllName")
+      continue
+    }
+    if ($dllName -match '^lib(ssl|crypto)-') {
+      $hasOpenSSL = $true
+      if ($opensslRoot) { $preferred = Join-Path $opensslRoot "bin\$dllName" }
+    } elseif ($dllName -match '^(msvcp|vcruntime|concrt|vcomp)\d') {
+      $preferred = $crtDirs | ForEach-Object { Join-Path $_.FullName $dllName } |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    } elseif (Test-Path -LiteralPath (Join-Path $env:SystemRoot "System32\$dllName") -PathType Leaf) {
+      $report.Add("WINDOWS SYSTEM $dllName")
+      continue
+    } elseif (Test-Path -LiteralPath $buildLocal -PathType Leaf) {
+      $preferred = $buildLocal
+    } elseif ($candidates[$dllName].Count -eq 1) {
+      $preferred = $candidates[$dllName][0]
+    }
+    if ($preferred -and (Test-Path -LiteralPath $preferred -PathType Leaf)) {
       $local = Join-Path $out $dllName
-      if (Test-Path -LiteralPath $local) {
-        $queued.Enqueue($local)
-        continue
-      }
-      if ($name.StartsWith('api-ms-win-') -or $name.StartsWith('ext-ms-win-')) {
-        $report.Add("WINDOWS API SET $dllName")
-        continue
-      }
-      $systemPath = Join-Path $env:SystemRoot ('System32\' + $dllName)
-      if (Test-Path -LiteralPath $systemPath) {
-        $report.Add("WINDOWS SYSTEM/INSTALLED $dllName")
-        continue
-      }
-      if (($runtimePrefixes | Where-Object { $name.StartsWith($_) }).Count -gt 0) {
-        $report.Add("MICROSOFT VC RUNTIME $dllName (install vc_redist.x64.exe)")
-        continue
-      }
-      $foundDlls = if ($candidates.ContainsKey($name)) { @($candidates[$name]) } else { @() }
-      if ($foundDlls.Count -gt 0) {
-        # Prefer DLLs next to built Proxy.exe, then Release, then Conan package bin.
-        $preferred = $foundDlls | Sort-Object @{ Expression={ if ((Split-Path $_) -eq (Split-Path $BuiltExe)) { 0 } elseif ($_ -match '[\\/]Release[\\/]') { 1 } elseif ($_ -match '[\\/]p[\\/]bin[\\/]') { 2 } else { 3 } } }, @{ Expression={ $_ } } | Select-Object -First 1
-        Copy-Item -LiteralPath $preferred -Destination $local -Force
-        $queued.Enqueue($local)
-        $report.Add("BUNDLED $dllName from $preferred")
-      } else {
-        $missing.Add($dllName)
-        $report.Add("UNRESOLVED $dllName")
-      }
+      Copy-Item -LiteralPath $preferred -Destination $local -Force
+      $queued.Enqueue($local)
+      $report.Add("BUNDLED $dllName from $preferred")
+    } else {
+      $missing.Add($dllName)
+      $report.Add("UNRESOLVED $dllName (missing or ambiguous runtime source)")
     }
   }
-  if ($missing.Count -gt 0) {
-    $report.Add('')
-    $report.Add('Unresolved non-system DLLs: ' + (($missing | Sort-Object -Unique) -join ', '))
-  }
 }
-$report.Add('')
-$report.Add('This check cannot prove Growtopia v5.61 connectivity or ban safety.')
 $reportFile = Join-Path $out 'ENGINE_DLL_REPORT.txt'
 $report | Set-Content -LiteralPath $reportFile -Encoding UTF8
 $report | ForEach-Object { Write-Host $_ }
+if ($missing.Count -gt 0) {
+  throw "Unresolved runtime DLLs: $($missing -join ', ')"
+}
+if ($hasOpenSSL) {
+  $license = Join-Path $opensslRoot 'LICENSE.txt'
+  Copy-Item -LiteralPath $license -Destination (Join-Path $out 'LICENSE-OpenSSL.txt') -Force
+}
+Copy-Item -LiteralPath (Join-Path $source 'LICENSE') -Destination (Join-Path $out 'LICENSE-GTProxy.txt') -Force
 Write-Host "Portable engine packaged in: $out" -ForegroundColor Green

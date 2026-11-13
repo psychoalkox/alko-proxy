@@ -73,7 +73,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           # Explicitly configure only Release for the multi-config MSVC generator.
-          cmake -S vendor/GTProxy -B vendor/GTProxy/build -G 'Visual Studio 17 2022' -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CONFIGURATION_TYPES=Release -DBUILD_TESTING=OFF
+          cmake -S vendor/GTProxy -B vendor/GTProxy/build -G 'Visual Studio 17 2022' -A x64 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CONFIGURATION_TYPES=Release -DBUILD_TESTING=OFF -DHTTPLIB_REQUIRE_OPENSSL=ON "-DOPENSSL_ROOT_DIR=$env:ProgramFiles/OpenSSL"
           if ($LASTEXITCODE -ne 0) { throw 'CMake / Conan configuration failed' }
 
       - name: Compile the native networking engine
@@ -89,13 +89,19 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & .\engine\PACKAGE_ENGINE_WINDOWS.ps1 -ProjectRoot (Get-Location).Path
           if (-not (Test-Path 'ALKO-native-engine/Proxy.exe')) { throw 'Portable engine was not produced' }
-          @'
-          ALKO native engine: compiled Windows x64 executable.
-          VC++ runtime on target PC: https://aka.ms/vc14/vc_redist.x64.exe
-          See ENGINE_DLL_REPORT.txt for resolved and unresolved DLL imports.
-          Compiled does not mean Growtopia 5.61 login is verified or ban-safe.
-          '@ | Set-Content 'ALKO-native-engine/BUILD_STATUS.txt'
           Get-ChildItem 'ALKO-native-engine' -Force | Format-Table Name,Length
+
+      - name: Smoke-test the packaged native engine
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\engine\TEST_ENGINE_WINDOWS.ps1 -EngineExe 'ALKO-native-engine/Proxy.exe'
+          @'
+          Windows x64 GTProxy startup verified. HTTPS port 443 opened and the ALKO bridge reported online.
+          OpenSSL and the Visual C++ runtime ship beside Proxy.exe. Keep the package together.
+          Growtopia 5.61 login, gameplay and ban safety remain unverified.
+          '@ | Set-Content 'ALKO-native-engine/BUILD_STATUS.txt'
+          Get-ChildItem -Path 'ALKO-native-engine' -Filter 'proxy*.log' -File | Remove-Item
 
       - name: Upload compiled engine (only if successful)
         uses: actions/upload-artifact@v4

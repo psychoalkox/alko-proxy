@@ -22,9 +22,9 @@ function Run-Native {
 }
 
 Write-Host 'ALKO engine source build (v5.61 connection NOT verified)' -ForegroundColor Yellow
-foreach ($exe in @('git', 'cmake', 'python')) {
+foreach ($exe in @('git', 'cmake', 'python', 'dumpbin.exe')) {
   if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) {
-    throw "Missing $exe. Install Git, CMake and Python 3.12 first."
+    throw "Missing $exe. Use an x64 Visual Studio 2022 developer shell with Git, CMake and Python 3.12 available."
   }
 }
 
@@ -52,7 +52,7 @@ Run-Native -Purpose 'Patch GTProxy with ALKO bridge' -Executable 'python' -Argum
 
 Run-Native -Purpose 'Configure GTProxy with MSVC' -Executable 'cmake' -Arguments @(
   '-S', $source, '-B', $build, '-G', 'Visual Studio 17 2022', '-A', 'x64',
-  '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_CONFIGURATION_TYPES=Release', '-DBUILD_TESTING=OFF'
+  '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_CONFIGURATION_TYPES=Release', '-DBUILD_TESTING=OFF', '-DHTTPLIB_REQUIRE_OPENSSL=ON'
 )
 Run-Native -Purpose 'Compile native GTProxy engine' -Executable 'cmake' -Arguments @('--build',$build,'--config','Release','--parallel','2')
 
