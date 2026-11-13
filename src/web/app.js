@@ -1,4 +1,4 @@
-/* ALKO Proxy control dashboard — no external dependencies, no telemetry upload. */
+/* ALKO Proxy control dashboard â€” no external dependencies, no telemetry upload. */
 'use strict';
 const token = document.querySelector('meta[name="alko-token"]').content;
 const names = {overview:'Overview',actions:'Quick actions',scanner:'World scanner',automations:'Automations',executor:'Lua executor',modules:'Modules',logs:'Console logs',settings:'Settings'};
@@ -47,10 +47,21 @@ async function refreshStatus(){
     $('kpi-engine-sub').textContent=running?`PID ${s.pid}`:'Not started';
     $('kpi-bridge').textContent=online?'ONLINE':'OFFLINE';
     $('kpi-queued').textContent=s.queued;
-    $('engine-chip').innerHTML=`<i></i>${online?'Bridge online':running?'Engine running · no bridge':'Engine offline'}`;
+    $('engine-chip').innerHTML=`<i></i>${online?'Bridge online':running?'Engine running Â· no bridge':'Engine offline'}`;
     $('engine-chip').classList.toggle('online',online);
     $('engine-detail').textContent=running?`Process ${s.pid}`:'No process running';
-    $('wire-status').textContent=online?'BRIDGE ACTIVE':running?'NO HEARTBEAT':'NOT CONNECTED';
+    const connection = {
+      connected: 'ENET CONNECTED',
+      connecting: 'CONNECTING UPSTREAM',
+      disconnected: !running ? 'NOT CONNECTED' : {
+        waiting: 'WAITING FOR GAME HTTPS',
+        requested: 'CHECKING GAME HTTPS',
+        failed: 'GAME HTTPS FAILED',
+        ready: 'WAITING FOR GAME ENET',
+      }[s.bootstrap] || 'NOT CONNECTED',
+      unknown: 'CONNECTION UNKNOWN',
+    };
+    $('wire-status').textContent=connection[s.connection] || 'CONNECTION UNKNOWN';
     $('side-status').textContent=online?'NATIVE BRIDGE ACTIVE':'CONTROL PANEL ACTIVE';
     $('start-engine').disabled=running;
     $('stop-engine').disabled=!running;
@@ -75,11 +86,11 @@ async function refreshScan(){
 function renderScan(){
   const scan=scanCache?.data; if(!scan)return;
   const totals=scan.totals||{};
-  $('scan-fg').textContent=totals.foreground?.toLocaleString()||'—';
-  $('scan-bg').textContent=totals.background?.toLocaleString()||'—';
-  $('scan-drops').textContent=totals.dropped?.toLocaleString()||'—';
-  $('scan-size').textContent=scan.size?.width?`${scan.size.width} × ${scan.size.height}`:'—';
-  $('scan-meta').textContent=scanCache.source==='none'?'No scan captured yet':`${scan.world} · ${scanCache.source} · ${new Date(scanCache.updated_at*1000).toLocaleString()}`;
+  $('scan-fg').textContent=totals.foreground?.toLocaleString()||'â€”';
+  $('scan-bg').textContent=totals.background?.toLocaleString()||'â€”';
+  $('scan-drops').textContent=totals.dropped?.toLocaleString()||'â€”';
+  $('scan-size').textContent=scan.size?.width?`${scan.size.width} Ã— ${scan.size.height}`:'â€”';
+  $('scan-meta').textContent=scanCache.source==='none'?'No scan captured yet':`${scan.world} Â· ${scanCache.source} Â· ${new Date(scanCache.updated_at*1000).toLocaleString()}`;
   const term=$('scan-search').value.trim().toLowerCase();
   const rows=[];
   ['foreground','background','dropped'].forEach(cat=>scan[cat]?.forEach(row=>{
@@ -90,7 +101,7 @@ function renderScan(){
   if(!rows.length){const tr=document.createElement('tr'),td=document.createElement('td');td.colSpan=3;td.className='empty';td.textContent='No matching scan items. Run /gscan to capture loaded-world data.';tr.append(td);table.append(tr);return;}
   for(const row of rows.slice(0,400)){
     const tr=document.createElement('tr');
-    for(const [txt,cls] of [[`${row.name}  ·  #${row.id}`,''],[row.cat,'category'],[row.count.toLocaleString(),'number']]){
+    for(const [txt,cls] of [[`${row.name}  Â·  #${row.id}`,''],[row.cat,'category'],[row.count.toLocaleString(),'number']]){
       const td=document.createElement('td');td.textContent=txt;td.className=cls;tr.append(td);
     } table.append(tr);
   }
@@ -109,13 +120,13 @@ async function issue(command,options={}){
       confirmTrash=true;
     }
     const data=await req('command',{command,confirm:!!confirmTrash});
-    $('command-output').textContent=`Queued ${data.command} · job ${data.id.slice(0,8)} · not a server acknowledgement`;
+    $('command-output').textContent=`Queued ${data.command} Â· job ${data.id.slice(0,8)} Â· not a server acknowledgement`;
     notify(`Command queued: ${command}`);
     refreshStatus();
   });
 }
 async function writeClip(value){try{await navigator.clipboard.writeText(value);notify('Copied '+value);}catch{notify('Clipboard blocked by browser',true);}}
-$('start-engine').addEventListener('click',()=>safe(async()=>{await req('engine/start',{});notify('Native engine process started — test game connection separately');refreshStatus();}));
+$('start-engine').addEventListener('click',()=>safe(async()=>{await req('engine/start',{});notify('Native engine process started â€” test game connection separately');refreshStatus();}));
 $('stop-engine').addEventListener('click',()=>safe(async()=>{await req('engine/stop',{});notify('Engine process stopped');refreshStatus();}));
 document.querySelectorAll('[data-command]').forEach(el=>el.addEventListener('click',()=>issue(el.dataset.command)));
 $('warp-send').addEventListener('click',()=>issue(`/warp ${$('warp-world').value.trim().toUpperCase()}`));
@@ -144,18 +155,18 @@ $('save-settings').addEventListener('click',()=>safe(async()=>{
 $('refresh-logs').addEventListener('click',refreshLogs);
 $('quit-app').addEventListener('click',()=>safe(async()=>{if(!confirm('Close ALKO Proxy? The local dashboard and any launched engine will stop.'))return;await req('app/quit',{});notify('ALKO Proxy closing');}));
 const modules=[
-  ['⌗','World scanner','Reads loaded tile foreground/background and dropped item counts.','IMPLEMENTED','ready'],
-  ['⌘','Command palette','Routes validated slash commands to the patched C++ engine.','IMPLEMENTED · REQUIRES ENGINE','ready'],
-  ['◈','Quick inventory','Fast drop and trash dialog requests from legacy packet formats.','EXPERIMENTAL',''],
-  ['♙','World/player intel','Local position, player counts, dropped-object summaries.','IMPLEMENTED · REQUIRES ENGINE','ready'],
-  ['↻','Automations','Finite command sequences, delays, repeat limits and cancellation.','IMPLEMENTED · REQUIRES ENGINE','ready'],
-  ['▣','Lua scripting','Optional Lua executor using the upstream safe-library environment.','IMPLEMENTED · REQUIRES ENGINE','ready'],
-  ['✳','Farm report','Seed extra/tile statistics; does not auto-harvest or place.','PARTIAL',''],
-  ['▥','Fast vending','Context-sensitive vend purchasing/restocking needs packet tests.','PLANNED','future'],
-  ['↔','Zoom / visual tools','Older clients expose mods; modern client requires testing.','PLANNED','future'],
-  ['◫','Multibot','Separate future engine, not integrated into this version.','PLANNED','future'],
-  ['▨','World history','Saved world shortcuts and scanner history.','PLANNED','future'],
-  ['♢','Security / diagnostics','Local-only dashboard, CSRF token, command allowlist, log redaction.','IMPLEMENTED','ready'],
+  ['âŒ—','World scanner','Reads loaded tile foreground/background and dropped item counts.','IMPLEMENTED','ready'],
+  ['âŒ˜','Command palette','Routes validated slash commands to the patched C++ engine.','IMPLEMENTED Â· REQUIRES ENGINE','ready'],
+  ['â—ˆ','Quick inventory','Fast drop and trash dialog requests from legacy packet formats.','EXPERIMENTAL',''],
+  ['â™™','World/player intel','Local position, player counts, dropped-object summaries.','IMPLEMENTED Â· REQUIRES ENGINE','ready'],
+  ['â†»','Automations','Finite command sequences, delays, repeat limits and cancellation.','IMPLEMENTED Â· REQUIRES ENGINE','ready'],
+  ['â–£','Lua scripting','Optional Lua executor using the upstream safe-library environment.','IMPLEMENTED Â· REQUIRES ENGINE','ready'],
+  ['âœ³','Farm report','Seed extra/tile statistics; does not auto-harvest or place.','PARTIAL',''],
+  ['â–¥','Fast vending','Context-sensitive vend purchasing/restocking needs packet tests.','PLANNED','future'],
+  ['â†”','Zoom / visual tools','Older clients expose mods; modern client requires testing.','PLANNED','future'],
+  ['â—«','Multibot','Separate future engine, not integrated into this version.','PLANNED','future'],
+  ['â–¨','World history','Saved world shortcuts and scanner history.','PLANNED','future'],
+  ['â™¢','Security / diagnostics','Local-only dashboard, CSRF token, command allowlist, log redaction.','IMPLEMENTED','ready'],
 ];
 function renderModules(){const grid=$('modules-grid');for(const [symbol,name,desc,label,cls] of modules){const el=document.createElement('div');el.className='module';const sym=document.createElement('div');sym.className='symbol';sym.textContent=symbol;const title=document.createElement('h2');title.textContent=name;const p=document.createElement('p');p.textContent=desc;const tag=document.createElement('span');tag.className='tag '+cls;tag.textContent=label;el.append(sym,title,p,tag);grid.append(el);}}
 renderModules();

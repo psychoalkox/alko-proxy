@@ -1,0 +1,468 @@
+diff --git a/src/command/commands/proxy_command.hpp b/src/command/commands/proxy_command.hpp
+index 1da1839..7017585 100644
+--- a/src/command/commands/proxy_command.hpp
++++ b/src/command/commands/proxy_command.hpp
+@@ -13,7 +13,10 @@ public:
+     {
+         packet::message::Log pkt{};
+         pkt.msg = "Proxy command executed successfully!";
+-        packet::PacketHelper::write(pkt, ctx.server);
++        if (!packet::PacketHelper::write(pkt, ctx.server)) {
++            return Result::Failed;
++        }
++        spdlog::info("Proxy smoke-test response sent to game client");
+         return Result::Success;
+     }
+ };
+diff --git a/src/core/core.cpp b/src/core/core.cpp
+index 4dd3d5e..fb8bf02 100644
+--- a/src/core/core.cpp
++++ b/src/core/core.cpp
+@@ -27,7 +27,7 @@ Core::Core()
+
+     server_ = std::make_unique<network::Server>(config_, dispatcher_);
+     client_ = std::make_unique<network::Client>(config_, dispatcher_);
+-    web_server_ = std::make_unique<WebServer>(config_, dispatcher_, *client_, *server_);
++    web_server_ = std::make_unique<WebServer>(config_, dispatcher_, *client_);
+
+     packet::register_all_packets();
+
+diff --git a/src/core/web_server.cpp b/src/core/web_server.cpp
+index 47d6703..87da64b 100644
+--- a/src/core/web_server.cpp
++++ b/src/core/web_server.cpp
+@@ -1,196 +1,174 @@
+ #include "web_server.hpp"
+
+-#include <fmt/format.h>
+-#include <magic_enum/magic_enum.hpp>
++#include <charconv>
++#include <cstdlib>
++#include <filesystem>
++#include <stdexcept>
++#include <utility>
+ #include <spdlog/spdlog.h>
+
+-#include "../utils/text_parse.hpp"
+-// ReSharper disable once CppUnusedIncludeDirective
+-#include "../utils/formatter/text_parse_formatter.hpp"
+-
+ namespace core {
++namespace {
++std::string tls_file(const char* filename)
++{
++    const auto* directory = std::getenv("ALKO_TLS_DIR");
++    return (std::filesystem::path{ directory && *directory ? directory : "./resources" } / filename).string();
++}
++
++constexpr auto bootstrap_path = "/growtopia/server_data.php";
++
++// Rewrite only the endpoint fields, retaining metadata, line endings and
++// terminators supplied by the upstream server.
++bool rewrite_endpoint(std::string& body, std::string& address, uint16_t& port, int local_port)
++{
++    std::string rewritten;
++    bool have_port = false;
++    for (size_t start = 0; start < body.size();) {
++        const auto newline = body.find('\n', start);
++        const auto end = newline == std::string::npos ? body.size() : newline;
++        const auto value_end = end > start && body[end - 1] == '\r' ? end - 1 : end;
++        const std::string_view line{ body.data() + start, value_end - start };
++        if (line.starts_with("server|")) {
++            if (!address.empty() || line.size() == 7) return false;
++            address = line.substr(7);
++            if (address.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-") != std::string::npos) {
++                return false;
++            }
++            rewritten += "server|127.0.0.1";
++        } else if (line.starts_with("port|")) {
++            if (have_port) return false;
++            const auto field = line.substr(5);
++            const auto [last, ec] = std::from_chars(field.data(), field.data() + field.size(), port);
++            if (ec != std::errc{} || last != field.data() + field.size() || port == 0) return false;
++            have_port = true;
++            rewritten += "port|" + std::to_string(local_port);
++        } else {
++            rewritten += line;
++        }
++        start = newline == std::string::npos ? end : end + 1;
++        rewritten.append(body, value_end, start - value_end);
++    }
++    if (address.empty() || !have_port) return false;
++    body = std::move(rewritten);
++    return true;
++}
++}
++
+ WebServer::WebServer(
+     Config& config,
+     event::Dispatcher& dispatcher,
+-    network::Client& client,
+-    network::Server& server
++    network::Client& client
+ )
+     : config_{ config }
+-    , dispatcher_{ dispatcher }
+     , client_{ client }
+-    , server_{ server }
+     , dns_resolver_{ network::create_dns_provider(config_.get_client_config().dns_server) }
+-    , https_server_{ "./resources/cert.pem", "./resources/key.pem" }
+-    , pending_port_{ 65535 }
++    , https_server_{ tls_file("cert.pem").c_str(), tls_file("key.pem").c_str() }
+ {
+-    setup_server();
+-
+-    if (!https_server_.bind_to_port("0.0.0.0", 443)) {
+-        spdlog::error("Failed to bind to port 443");
+-        return;
++    if (!https_server_.is_valid()) {
++        throw std::runtime_error{ "HTTPS credentials are missing or invalid. See the ALKO Windows connection setup." };
+     }
+
+-    dispatcher_.appendListener(event::Type::ClientConnect, [this](const event::Event& e) { on_client_connect(e); });
+-    dispatcher_.appendListener(event::Type::ClientDisconnect, [this](const event::Event& e) { on_client_disconnect(e); });
++    https_server_.set_logger([](const httplib::Request& req, const httplib::Response& res) {
++        // Log only the recognized endpoint, method and response status.
++        if (req.path == bootstrap_path || req.path == "/healthz") {
++            spdlog::info("{} {} {}", req.method, req.path, res.status);
++        }
++    });
++    https_server_.Get("/healthz", [](const httplib::Request&, httplib::Response& res) {
++        res.set_content("ok", "text/plain");
++    });
++    https_server_.Post(bootstrap_path, [this](const httplib::Request& req, httplib::Response& res) {
++        on_bootstrap(req, res);
++    });
++    if (!https_server_.bind_to_port("127.0.0.1", 443)) {
++        throw std::runtime_error{ "Failed to bind HTTPS to 127.0.0.1:443" };
++    }
+
+-    spdlog::info("HTTPS server listening on port 443");
+-    server_thread_ = std::thread{ &WebServer::listen_internal, this };
++    dispatcher.appendListener(event::Type::ClientConnect, [this](const event::Event&) {
++        on_client_connect();
++    });
++    spdlog::info("HTTPS server listening on 127.0.0.1:443");
++    server_thread_ = std::thread{ [this] { https_server_.listen_after_bind(); } };
+ }
+
+ WebServer::~WebServer()
+ {
+     https_server_.stop();
+-    server_thread_.join();
++    if (server_thread_.joinable()) server_thread_.join();
+ }
+
+-void WebServer::setup_server()
++std::string_view WebServer::bootstrap_state() const
+ {
+-    https_server_.set_logger([](const httplib::Request& req, const httplib::Response& res) {
+-        spdlog::info("{} {} {}", req.method, req.path, res.status);
+-    });
+-
+-    https_server_.set_error_handler([](const httplib::Request&, httplib::Response& res) {
+-        res.set_content(
+-            fmt::format("{} ({})", httplib::status_message(res.status), res.status),
+-            "text/plain"
+-        );
+-    });
+-
+-    https_server_.set_exception_handler([](const httplib::Request&, httplib::Response& res, const std::exception_ptr& ep) {
+-        res.status = 500;
+-        try {
+-            std::rethrow_exception(ep);
+-        }
+-        catch (const std::exception& e) {
+-            res.set_content(fmt::format("{}", e.what()), "text/plain");
+-        }
+-        catch (...) { // This should never happen, but just in case
+-            res.set_content("Unknown Exception", "text/plain");
+-        }
+-    });
++    switch (bootstrap_.load()) {
++    case Bootstrap::Requested: return "requested";
++    case Bootstrap::Failed: return "failed";
++    case Bootstrap::Ready: return "ready";
++    default: return "waiting";
++    }
+ }
+
+-void WebServer::listen_internal()
++void WebServer::on_bootstrap(const httplib::Request& req, httplib::Response& res)
+ {
+-    https_server_.Post("/growtopia/server_data.php", [this](
+-        const httplib::Request& req,
+-        httplib::Response& res
+-    ) -> bool {
+-        if (!req.headers.empty()) {
+-            spdlog::info("Headers:");
+-            for (const auto& [key, value] : req.headers) {
+-                spdlog::info("\t{}: {}", key, value);
+-            }
+-        }
+-
+-        if (!req.params.empty()) {
+-            spdlog::info("Params:");
+-            spdlog::info("\t{}", httplib::detail::params_to_query_str(req.params));
+-        }
+-
+-        if (!req.body.empty()) {
+-            spdlog::info("Body:");
+-            spdlog::info("\t{}", req.body);
+-        }
+-
+-        std::string server_address = config_.get_server_config().address;
+-        std::string resolved_ip = dns_resolver_.resolve_ip(server_address);
+-
+-        if (resolved_ip.empty()) {
+-            res.status = 500;
+-            res.set_content("Failed to resolve server address", "text/plain");
+-            return true;
+-        }
+-
+-        httplib::Client cli{ fmt::format("https://{}", resolved_ip) };
+-        cli.enable_server_certificate_verification(false);
+-
+-        httplib::Headers headers{
+-            { "User-Agent", req.get_header_value("User-Agent") },
+-            { "Host", server_address }
+-        };
+-
+-        httplib::Result response{ cli.Post("/growtopia/server_data.php", headers, req.params) };
+-        if (!response) {
+-            spdlog::error(
+-                "Response is null: httplib::Error::{}",
+-                magic_enum::enum_name(response.error())
+-            );
+-
+-            res.status = 502;
+-            res.set_content("Failed to get response from server", "text/plain");
+-            return true;
+-        }
+-
+-        if (response.error() != httplib::Error::Success || response->status != 200) {
+-            spdlog::error(
+-                "Failed to get response: {}",
+-                response.error() == httplib::Error::Success
+-                    ? fmt::format("HTTP status: {}", response->status)
+-                    : fmt::format("HTTP error: {}", httplib::to_string(response.error()))
+-            );
+-
+-            res.status = 502;
+-            res.set_content("Failed to get response from server", "text/plain");
+-            return true;
+-        }
+-
+-        if (response->body.empty()) {
+-            res.status = 502;
+-            res.set_content("Empty response from server", "text/plain");
+-            return true;
+-        }
+-
+-        utils::TextParse text_parse{ response->body };
+-        if (text_parse.empty()) {
+-            spdlog::error("Failed to parse server_data.php response");
+-            res.status = 500;
+-            return true;
+-        }
+-
+-        spdlog::info("Original server_data.php response:\n{}", text_parse);
+-
+-        pending_address_ = text_parse.get("server", 0);
+-
+-        std::string port{ text_parse.get("port", 0) };
+-        if (
+-            auto [ptr, ec] = std::from_chars(port.data(), port.data() + port.size(), pending_port_);
+-            ec != std::errc{}
+-        ) {
+-            spdlog::error("Failed to parse port from server_data.php response");
+-            res.status = 500;
+-            return true;
+-        }
+-
+-        text_parse.set("server", { "127.0.0.1" });
+-        text_parse.set("port", { std::to_string(config_.get_server_config().port) });
+-
+-        spdlog::debug("Modified server_data.php response:\n{}", text_parse);
+-
+-        res.set_content(text_parse.get_raw(), "text/html");
+-        return true;
+-    });
++    std::lock_guard request_lock{ request_mutex_ };
++    bootstrap_ = Bootstrap::Requested;
++    const auto fail = [&](std::string_view message) {
++        bootstrap_ = Bootstrap::Failed;
++        spdlog::warn("Bootstrap failed: {}", message);
++        res.status = 502;
++        res.set_content(std::string{ message }, "text/plain");
++    };
++
++    const auto& hostname = config_.get_server_config().address;
++    const auto ip = dns_resolver_.resolve_ip(hostname);
++    if (ip.empty()) return fail("Upstream DNS lookup failed");
++
++    // Keep the original hostname for TLS SNI and certificate validation,
++    // while connecting to the DNS result independent of local hosts mappings.
++    httplib::SSLClient upstream{ hostname };
++    upstream.set_hostname_addr_map({{ hostname, ip }});
++    upstream.set_connection_timeout(5);
++    upstream.set_read_timeout(8);
++    upstream.set_write_timeout(5);
++
++    httplib::Headers headers;
++    if (req.has_header("User-Agent")) headers.emplace("User-Agent", req.get_header_value("User-Agent"));
++    const auto target = req.target.empty() ? req.path : req.target;
++    const auto type = req.get_header_value("Content-Type", "application/x-www-form-urlencoded");
++    const auto response = upstream.Post(target, headers, req.body, type);
++    if (!response) {
++        spdlog::warn("Upstream HTTPS error: {}", httplib::to_string(response.error()));
++        return fail("Upstream HTTPS request failed");
++    }
++    if (response->status != 200) {
++        spdlog::warn("Upstream bootstrap returned HTTP {}", response->status);
++        return fail("Upstream rejected the bootstrap request");
++    }
+
+-    https_server_.listen_after_bind();
++    auto body = response->body;
++    Endpoint endpoint;
++    if (!rewrite_endpoint(body, endpoint.address, endpoint.port, config_.get_server_config().port)) {
++        return fail("Upstream response lacks a valid server endpoint");
++    }
++    {
++        std::lock_guard lock{ bootstrap_mutex_ };
++        pending_ = std::move(endpoint);
++    }
++    bootstrap_ = Bootstrap::Ready;
++    res.set_content(std::move(body), response->get_header_value("Content-Type", "text/html"));
+ }
+
+-void WebServer::on_client_connect(const event::Event& e)
++void WebServer::on_client_connect()
+ {
+-    if (pending_port_ == 65535) {
++    std::optional<Endpoint> endpoint;
++    {
++        std::lock_guard lock{ bootstrap_mutex_ };
++        endpoint = std::exchange(pending_, std::nullopt);
++    }
++    if (!endpoint) return;
++    if (!client_.connect(endpoint->address, endpoint->port)) {
++        spdlog::warn("Could not start upstream ENet connection");
+         return;
+     }
+-
+-    spdlog::info("Connecting to Growtopia server at {}:{}", pending_address_, pending_port_);
+-
+-    client_.connect(pending_address_, pending_port_);
+-
+-    pending_address_.clear();
+-    pending_port_ = 65535;
+-}
+-
+-void WebServer::on_client_disconnect(const event::Event& e)
+-{
+-    pending_address_.clear();
+-    pending_port_ = 65535;
++    spdlog::info("Upstream ENet connection initiated");
+ }
+ }
+diff --git a/src/core/web_server.hpp b/src/core/web_server.hpp
+index 6b1c447..2f1e19c 100644
+--- a/src/core/web_server.hpp
++++ b/src/core/web_server.hpp
+@@ -1,5 +1,9 @@
+ #pragma once
+ #include <httplib.h>
++#include <atomic>
++#include <mutex>
++#include <optional>
++#include <string_view>
+ #include <thread>
+
+ #include "../core/config.hpp"
+@@ -14,29 +18,31 @@ public:
+     WebServer(
+         Config& config,
+         event::Dispatcher& dispatcher,
+-        network::Client& client,
+-        network::Server& server
++        network::Client& client
+     );
+     ~WebServer();
++    [[nodiscard]] std::string_view bootstrap_state() const;
+
+ private:
+-    void setup_server();
+-    void listen_internal();
+-
+-    void on_client_connect(const event::Event& e);
+-    void on_client_disconnect(const event::Event& e);
++    void on_bootstrap(const httplib::Request& req, httplib::Response& res);
++    void on_client_connect();
+
+ private:
+     Config& config_;
+-    event::Dispatcher& dispatcher_;
+     network::Client& client_;
+-    network::Server& server_;
+
+     network::DnsResolver dns_resolver_;
+     httplib::SSLServer https_server_;
+     std::thread server_thread_;
+
+-    std::string pending_address_;
+-    uint16_t pending_port_;
++    enum class Bootstrap { Waiting, Requested, Failed, Ready };
++    struct Endpoint {
++        std::string address;
++        uint16_t port{};
++    };
++    std::atomic<Bootstrap> bootstrap_{ Bootstrap::Waiting };
++    std::mutex request_mutex_;
++    std::mutex bootstrap_mutex_;
++    std::optional<Endpoint> pending_;
+ };
+ }
+diff --git a/src/network/client.cpp b/src/network/client.cpp
+index 1a17647..c0d98eb 100644
+--- a/src/network/client.cpp
++++ b/src/network/client.cpp
+@@ -45,7 +45,9 @@ bool Client::connect(const std::string& host, std::uint16_t port)
+     }
+
+     ENetAddress address{};
+-    enet_address_set_host(&address, ENET_ADDRESS_TYPE_IPV4, host.c_str());
++    if (enet_address_set_host(&address, ENET_ADDRESS_TYPE_IPV4, host.c_str()) != 0) {
++        return false;
++    }
+     address.port = port;
+
+     peer_ = enet_host_connect(host_, &address, 2, 0);
+diff --git a/src/network/dns_resolver.cpp b/src/network/dns_resolver.cpp
+index 8882aff..b1bafd9 100644
+--- a/src/network/dns_resolver.cpp
++++ b/src/network/dns_resolver.cpp
+@@ -45,7 +45,6 @@ DnsResult DnsResolver::resolve_domain(const std::string& domain) const
+     };
+
+     httplib::Client cli{ fmt::format("https://{}", provider_->get_host()) };
+-    cli.enable_server_certificate_verification(false);
+
+     cli.set_connection_timeout(5);
+     cli.set_read_timeout(10);
+diff --git a/src/network/server.cpp b/src/network/server.cpp
+index f6bc51f..978b7ef 100644
+--- a/src/network/server.cpp
++++ b/src/network/server.cpp
+@@ -28,7 +28,9 @@ Server::Server(core::Config& config, event::Dispatcher& dispatcher)
+ ENetHost* Server::create_host(std::uint16_t port)
+ {
+     ENetAddress address{};
+-    address.type = ENET_ADDRESS_TYPE_IPV4;
++    if (enet_address_set_host(&address, ENET_ADDRESS_TYPE_IPV4, "127.0.0.1") != 0) {
++        return nullptr;
++    }
+     address.port = port;
+
+     ENetHost* host{ enet_host_create(ENET_ADDRESS_TYPE_IPV4, &address, 1, 2, 0, 0) };

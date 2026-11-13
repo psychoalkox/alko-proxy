@@ -43,7 +43,9 @@ Run-Native -Purpose 'Detect MSVC profile' -Executable 'conan' -Arguments @('prof
 
 if (-not (Test-Path (Join-Path $source '.git'))) {
   New-Item -ItemType Directory -Path (Join-Path $root 'vendor') -Force | Out-Null
-  Run-Native -Purpose 'Fetch upstream GTProxy source and submodules' -Executable 'git' -Arguments @('clone', '--depth','1','--recurse-submodules','https://github.com/vinskeeper/GTProxy.git',$source)
+  Run-Native -Purpose 'Fetch upstream GTProxy source' -Executable 'git' -Arguments @('clone','--no-checkout','https://github.com/vinskeeper/GTProxy.git',$source)
+  Run-Native -Purpose 'Select supported GTProxy revision' -Executable 'git' -Arguments @('-C',$source,'checkout','--detach','b187f4dc25ab93c115d6c4390cdad539198eacef')
+  Run-Native -Purpose 'Fetch pinned submodules' -Executable 'git' -Arguments @('-C',$source,'submodule','update','--init','--recursive')
 }
 Run-Native -Purpose 'Patch GTProxy with ALKO bridge' -Executable 'python' -Arguments @((Join-Path $root 'engine\patch_engine.py'), $source)
 

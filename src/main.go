@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rand"
 	"embed"
 	"encoding/hex"
@@ -67,7 +68,7 @@ func validateCommand(s string) (string, error) {
 		id, e1 := strconv.Atoi(p[1])
 		count, e2 := strconv.Atoi(p[2])
 		if e1 != nil || e2 != nil || id <= 0 || id >= 1000000 || count < 1 || count > 200 {
-			return "", errors.New("Item ID must be positive; amount 1–200")
+			return "", errors.New("Item ID must be positive; amount 1â€“200")
 		}
 	}
 	return s, nil
@@ -98,7 +99,7 @@ type Controller struct {
 	logs       []logItem
 	started    time.Time
 	cmd        *exec.Cmd
-	stopping   chan struct{}
+	session    string
 	wf         WFState
 	wfStop     chan struct{}
 	wfActive   bool
@@ -124,7 +125,7 @@ func newController(dir string) (*Controller, error) {
 			}
 		}
 	}
-	c.log("ALKO standalone dashboard started — native game engine not included")
+	c.log("ALKO standalone dashboard started â€” native game engine not included")
 	return c, nil
 }
 func (c *Controller) log(s string) { c.mu.Lock(); defer c.mu.Unlock(); c.logUnsafe(s) }
@@ -138,19 +139,32 @@ func (c *Controller) logUnsafe(s string) {
 		c.logs = c.logs[len(c.logs)-450:]
 	}
 }
-func (c *Controller) bridgeAge() (time.Duration, bool) {
-	fi, e := os.Stat(filepath.Join(c.bridgeDir, "telemetry", "heartbeat.json"))
-	if e != nil {
-		return 0, false
-	}
-	return time.Since(fi.ModTime()), true
+
+type heartbeat struct {
+	Bridge     string `json:"bridge"`
+	Engine     string `json:"engine"`
+	Session    string `json:"session"`
+	Connection string `json:"connection"`
+	Bootstrap  string `json:"bootstrap"`
 }
-func (c *Controller) bridgeOnline() bool {
-	age, ok := c.bridgeAge()
-	c.mu.Lock()
-	running := c.cmd != nil
-	c.mu.Unlock()
-	return running && ok && age >= 0 && age < 5*time.Second
+
+func (c *Controller) readHeartbeat(session string) (heartbeat, bool) {
+	f, err := os.Open(filepath.Join(c.bridgeDir, "telemetry", "heartbeat.json"))
+	if err != nil {
+		return heartbeat{}, false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return heartbeat{}, false
+	}
+	age := time.Since(fi.ModTime())
+	var h heartbeat
+	if age < 0 || age >= 5*time.Second || json.NewDecoder(io.LimitReader(f, 4096)).Decode(&h) != nil ||
+		h.Bridge != "online" || h.Engine != "GTProxy" || h.Session != session {
+		return heartbeat{}, false
+	}
+	return h, true
 }
 func (c *Controller) status() map[string]any {
 	c.mu.Lock()
@@ -159,10 +173,10 @@ func (c *Controller) status() map[string]any {
 	if run && c.cmd.Process != nil {
 		pid = c.cmd.Process.Pid
 	}
-	wf := c.wf
+	wf, session := c.wf, c.session
 	c.mu.Unlock()
 	queued := 0
-	files, _ := os.ReadDir(filepath.Join(c.bridgeDir, "inbox"))
+	files, _ := os.ReadDir(filepath.Join(c.bridgeDir, "inbox", session))
 	for _, f := range files {
 		if strings.HasSuffix(f.Name(), ".cmd") || strings.HasSuffix(f.Name(), ".lua") {
 			queued++
@@ -173,11 +187,13 @@ func (c *Controller) status() map[string]any {
 	if run {
 		engine = "running"
 	}
-	bridge := "offline"
-	if c.bridgeOnline() {
-		bridge = "online"
+	bridge, connection, bootstrap := "offline", "unknown", "unknown"
+	if !run {
+		connection = "disconnected"
+	} else if h, ok := c.readHeartbeat(session); ok {
+		bridge, connection, bootstrap = "online", h.Connection, h.Bootstrap
 	}
-	return map[string]any{"dashboard": "online", "engine": engine, "bridge": bridge, "target_version": "5.61", "compatibility": "UNVERIFIED — requires successful live test", "uptime_seconds": int(time.Since(c.started).Seconds()), "pid": pid, "workflow": wf, "queued": queued, "recent_receipts": r}
+	return map[string]any{"dashboard": "online", "engine": engine, "bridge": bridge, "connection": connection, "bootstrap": bootstrap, "target_version": "5.61", "compatibility": "UNVERIFIED â€” requires successful live test", "uptime_seconds": int(time.Since(c.started).Seconds()), "pid": pid, "workflow": wf, "queued": queued, "recent_receipts": r}
 }
 func (c *Controller) receipts(n int) []receipt {
 	dir := filepath.Join(c.bridgeDir, "outbox")
@@ -275,66 +291,75 @@ func (c *Controller) saveSettings(p map[string]any) (map[string]any, error) {
 }
 func (c *Controller) engineStart() (map[string]any, error) {
 	c.mu.Lock()
+	err := c.launchEngine()
+	c.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return c.status(), nil
+}
+
+func (c *Controller) launchEngine() error {
 	if c.cmd != nil {
-		c.mu.Unlock()
-		return nil, errors.New("Engine is already running")
+		return errors.New("Engine is already running")
 	}
 	path, _ := c.settings["engine_path"].(string)
-	c.mu.Unlock()
 	if path == "" {
-		return nil, errors.New("The native GTProxy engine is not included. Set its compiled executable path in Settings first.")
+		return errors.New("The native GTProxy engine is not included. Set its compiled executable path in Settings first.")
 	}
 	abs, err := filepath.Abs(os.ExpandEnv(path))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	fi, err := os.Stat(abs)
 	if err != nil || fi.IsDir() {
-		return nil, errors.New("Engine executable not found")
+		return errors.New("Engine executable not found")
 	}
 	if runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(abs), ".exe") {
-		return nil, errors.New("Expected a Windows .exe engine")
+		return errors.New("Expected a Windows .exe engine")
+	}
+	session := randomID()
+	inbox := filepath.Join(c.bridgeDir, "inbox", session)
+	if err := os.Mkdir(inbox, 0700); err != nil {
+		return err
 	}
 	cmd := exec.Command(abs)
 	cmd.Dir = filepath.Dir(abs)
-	cmd.Env = append(os.Environ(), "ALKO_BRIDGE_DIR="+c.bridgeDir)
+	cmd.Env = append(os.Environ(), "ALKO_BRIDGE_DIR="+c.bridgeDir, "ALKO_BRIDGE_SESSION="+session)
 	rd, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, err
+		_ = os.Remove(inbox)
+		return err
 	}
 	cmd.Stderr = cmd.Stdout
 	if err = cmd.Start(); err != nil {
-		return nil, err
+		_ = rd.Close()
+		_ = os.Remove(inbox)
+		return err
 	}
-	c.mu.Lock()
-	c.cmd = cmd
-	c.logUnsafe(fmt.Sprintf("Engine PID %d launched; live Growtopia connectivity unverified", cmd.Process.Pid))
-	c.mu.Unlock()
+	c.cmd, c.session = cmd, session
+	c.logUnsafe(fmt.Sprintf("Engine PID %d launched from %s", cmd.Process.Pid, cmd.Dir))
 	go func() {
-		buf := make([]byte, 2048)
-		for {
-			n, e := rd.Read(buf)
-			if n > 0 {
-				for _, s := range strings.Split(string(buf[:n]), "\n") {
-					s = strings.TrimSpace(s)
-					if s != "" {
-						c.log(s)
-					}
-				}
+		scanner := bufio.NewScanner(rd)
+		scanner.Buffer(make([]byte, 4096), 1024*1024)
+		for scanner.Scan() {
+			if line := strings.TrimSpace(scanner.Text()); line != "" {
+				c.log(line)
 			}
-			if e != nil {
-				break
-			}
+		}
+		if err := scanner.Err(); err != nil {
+			c.log("Engine log read failed: " + err.Error())
+			_, _ = io.Copy(io.Discard, rd)
 		}
 		e := cmd.Wait()
 		c.mu.Lock()
-		if c.cmd == cmd {
-			c.cmd = nil
-		}
+		c.cmd, c.session = nil, ""
 		c.logUnsafe(fmt.Sprintf("Native engine exited: %v", e))
 		c.mu.Unlock()
+		// This directory belongs to the exited engine; its jobs cannot be replayed.
+		_ = os.RemoveAll(inbox)
 	}()
-	return c.status(), nil
+	return nil
 }
 func (c *Controller) engineStop() map[string]any {
 	c.workflowStop()
@@ -356,13 +381,18 @@ func (c *Controller) queue(ext, source string) (string, error) {
 		source = s + "\n"
 	} else if ext == "lua" {
 		if len(source) > 20000 || strings.TrimSpace(source) == "" {
-			return "", errors.New("Lua source must be 1–20,000 characters")
+			return "", errors.New("Lua source must be 1â€“20,000 characters")
 		}
 	} else {
 		return "", errors.New("Invalid queue type")
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.checkBridgeLocked(); err != nil {
+		return "", err
+	}
 	id := randomID()
-	dir := filepath.Join(c.bridgeDir, "inbox")
+	dir := filepath.Join(c.bridgeDir, "inbox", c.session)
 	temp := filepath.Join(dir, id+".tmp")
 	final := filepath.Join(dir, id+"."+ext)
 	if err := os.WriteFile(temp, []byte(source), 0600); err != nil {
@@ -375,8 +405,20 @@ func (c *Controller) queue(ext, source string) (string, error) {
 	return id, nil
 }
 func (c *Controller) checkBridge() error {
-	if !c.bridgeOnline() {
-		return errors.New("Engine bridge is offline. A compiled and patched native engine must be running.")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.checkBridgeLocked()
+}
+func (c *Controller) checkBridgeLocked() error {
+	if c.cmd == nil {
+		return errors.New("Native engine is stopped")
+	}
+	h, ok := c.readHeartbeat(c.session)
+	if !ok {
+		return errors.New("Engine connection status is unavailable. Start the matching ALKO engine build and check its log.")
+	}
+	if h.Connection != "connected" {
+		return fmt.Errorf("Growtopia relay %s (HTTPS bootstrap: %s). Command was not queued.", h.Connection, h.Bootstrap)
 	}
 	return nil
 }
@@ -529,10 +571,10 @@ func (c *Controller) scanImport(m map[string]any) (map[string]any, error) {
 func (c *Controller) workflowState() WFState { c.mu.Lock(); defer c.mu.Unlock(); return c.wf }
 func (c *Controller) workflowStart(name string, steps []Step, repeat int) (WFState, error) {
 	if len(steps) < 1 || len(steps) > 30 {
-		return WFState{}, errors.New("A workflow needs 1–30 steps")
+		return WFState{}, errors.New("A workflow needs 1â€“30 steps")
 	}
 	if repeat < 1 || repeat > 20 {
-		return WFState{}, errors.New("Repeat must be 1–20")
+		return WFState{}, errors.New("Repeat must be 1â€“20")
 	}
 	for i := range steps {
 		s := &steps[i]
@@ -543,7 +585,7 @@ func (c *Controller) workflowStart(name string, steps []Step, repeat int) (WFSta
 			}
 			s.Command = cmd
 		} else if s.WaitMS < 400 || s.WaitMS > 60000 {
-			return WFState{}, errors.New("Wait must be 400–60,000 ms")
+			return WFState{}, errors.New("Wait must be 400â€“60,000 ms")
 		}
 	}
 	c.mu.Lock()
@@ -742,9 +784,6 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		scan, e = a.c.scanImport(m)
 		result = map[string]any{"data": scan}
 	case "/api/command":
-		if e = a.c.checkBridge(); e != nil {
-			break
-		}
 		cmd, er := validateCommand(str(m["command"], ""))
 		if er != nil {
 			e = er
@@ -769,9 +808,6 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.c.mu.Unlock()
 		if !enabled {
 			e = errors.New("Enable custom Lua executor in Settings first")
-			break
-		}
-		if e = a.c.checkBridge(); e != nil {
 			break
 		}
 		var id string

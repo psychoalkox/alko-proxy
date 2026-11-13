@@ -19,6 +19,12 @@ jobs:
         with:
           arch: x64
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go.mod
+          cache: false
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -40,8 +46,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          git clone --depth 1 --recurse-submodules https://github.com/vinskeeper/GTProxy.git vendor/GTProxy
+          git clone --no-checkout https://github.com/vinskeeper/GTProxy.git vendor/GTProxy
           if ($LASTEXITCODE -ne 0) { throw 'Upstream source could not be fetched' }
+          git -C vendor/GTProxy checkout --detach b187f4dc25ab93c115d6c4390cdad539198eacef
+          if ($LASTEXITCODE -ne 0) { throw 'Supported upstream revision could not be checked out' }
+          git -C vendor/GTProxy submodule update --init --recursive
+          if ($LASTEXITCODE -ne 0) { throw 'Upstream submodules could not be fetched' }
           git -C vendor/GTProxy rev-parse HEAD | Set-Content upstream-commit.txt
 
       - name: Apply ALKO dashboard bridge and feature modules
@@ -91,14 +101,25 @@ jobs:
           if (-not (Test-Path 'ALKO-native-engine/Proxy.exe')) { throw 'Portable engine was not produced' }
           Get-ChildItem 'ALKO-native-engine' -Force | Format-Table Name,Length
 
+      - name: Test and build the matching ALKO launcher
+        shell: pwsh
+        working-directory: src
+        run: |
+          go test ./...
+          if ($LASTEXITCODE -ne 0) { throw 'ALKO launcher tests failed' }
+          go build -trimpath -o ../ALKO-native-engine/ALKOProxy.exe .
+          if ($LASTEXITCODE -ne 0) { throw 'ALKO launcher build failed' }
+
       - name: Smoke-test the packaged native engine
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           & .\engine\TEST_ENGINE_WINDOWS.ps1 -EngineExe 'ALKO-native-engine/Proxy.exe'
           @'
-          Windows x64 GTProxy startup verified. HTTPS port 443 opened and the ALKO bridge reported online.
+          Windows x64 GTProxy startup verified. The loopback listeners and disconnected bridge were tested.
           OpenSSL and the Visual C++ runtime ship beside Proxy.exe. Keep the package together.
+          Use the matching ALKOProxy.exe from this artifact.
+          Generate local TLS credentials before starting the engine. See the repository setup guide.
           Growtopia 5.61 login, gameplay and ban safety remain unverified.
           '@ | Set-Content 'ALKO-native-engine/BUILD_STATUS.txt'
           Get-ChildItem -Path 'ALKO-native-engine' -Filter 'proxy*.log' -File | Remove-Item

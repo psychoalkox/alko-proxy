@@ -28,6 +28,7 @@ foreach ($dirname in @('scripts', 'resources')) {
   $target = Join-Path $out $dirname
   New-Item -ItemType Directory -Path $target -Force | Out-Null
   foreach ($item in Get-ChildItem -LiteralPath $origin -Force) {
+    if ($dirname -eq 'resources' -and $item.Name -in @('cert.pem', 'key.pem')) { continue }
     Copy-Item -LiteralPath $item.FullName -Destination $target -Recurse -Force
   }
 }

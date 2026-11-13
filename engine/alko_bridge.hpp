@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <spdlog/spdlog.h>
 #include "../scripting/lua_engine.hpp"
 
 namespace alko_bridge {
@@ -54,22 +55,40 @@ inline void install_emit(scripting::LuaEngine& engine) {
 }
 class Bridge {
 public:
-    void poll(scripting::LuaEngine& engine) {
+    void poll(scripting::LuaEngine& engine, bool game_connected, bool upstream_connected,
+              std::string_view bootstrap) {
         const fs::path bridge = root();
         if (bridge.empty()) return;
+        const auto* session_value = std::getenv("ALKO_BRIDGE_SESSION");
+        const std::string session = session_value ? session_value : "";
+        if (!session.empty() &&
+            (session.size() != 32 || session.find_first_not_of("0123456789abcdef") != std::string::npos)) return;
+        const auto inbox = session.empty() ? bridge / "inbox" : bridge / "inbox" / session;
         const auto now = std::chrono::steady_clock::now();
         if (now - last_check_ < std::chrono::milliseconds(120)) return;
         last_check_ = now;
         std::error_code ec;
-        fs::create_directories(bridge / "inbox", ec);
+        fs::create_directories(inbox, ec);
         fs::create_directories(bridge / "outbox", ec);
         fs::create_directories(bridge / "telemetry", ec);
-        if (now - last_heartbeat_ >= std::chrono::seconds(1)) {
-            write_file_atomic(bridge / "telemetry" / "heartbeat.json", "{\"bridge\":\"online\",\"engine\":\"GTProxy\"}");
+        const std::string_view connection = game_connected
+            ? (upstream_connected ? "connected" : "connecting")
+            : "disconnected";
+        if (connection != last_connection_ || bootstrap != last_bootstrap_ ||
+            now - last_heartbeat_ >= std::chrono::seconds(1)) {
+            write_file_atomic(bridge / "telemetry" / "heartbeat.json",
+                "{\"bridge\":\"online\",\"engine\":\"GTProxy\",\"session\":\"" + session +
+                "\",\"connection\":\"" + std::string(connection) + "\",\"bootstrap\":\"" +
+                std::string(bootstrap) + "\"}");
+            if (last_connection_ != connection || last_bootstrap_ != bootstrap) {
+                spdlog::info("ALKO connection: {} (bootstrap: {})", connection, bootstrap);
+            }
+            last_connection_ = connection;
+            last_bootstrap_ = bootstrap;
             last_heartbeat_ = now;
         }
         std::vector<fs::path> jobs;
-        for (fs::directory_iterator it(bridge / "inbox", ec), end; !ec && it != end; it.increment(ec)) {
+        for (fs::directory_iterator it(inbox, ec), end; !ec && it != end; it.increment(ec)) {
             if (it->is_regular_file(ec) && (it->path().extension() == ".cmd" || it->path().extension() == ".lua")) {
                 jobs.push_back(it->path());
                 if (jobs.size() >= 20) break;
@@ -81,27 +100,32 @@ public:
             bool success = false;
             std::string message;
             auto size = fs::file_size(path, ec);
-            if (!ec && size <= (script ? 20000u : 200u)) {
+            if (connection != "connected") {
+                message = "Game relay disconnected; job was discarded";
+            } else if (!ec && size <= (script ? 20000u : 200u)) {
                 if (script) {
                     success = engine.execute_file(path);
-                    message = "Lua evaluated by engine; game effect not confirmed";
+                    message = success ? "Lua evaluated by engine; game effect unconfirmed" : "Lua evaluation failed";
                 } else {
                     std::ifstream stream(path, std::ios::binary);
                     std::string cmd;
                     std::getline(stream, cmd);
                     if (valid_command(cmd)) {
                         success = engine.execute("if not command.execute(" + lua_quote(cmd) + ") then error('Command failed') end");
-                        message = "Command dispatched; server acceptance unconfirmed";
+                        message = success ? "Command handled locally; game effect unconfirmed" : "Command dispatch failed";
                     } else message = "Rejected by bridge command allowlist";
                 }
             } else message = "Job exceeds size limit";
             write_file_atomic(bridge / "outbox" / (path.stem().string() + ".json"),
                 "{\"id\":\"" + path.stem().string() + "\",\"ok\":" + (success ? "true" : "false") +
                 ",\"type\":\"" + (script ? "lua" : "command") + "\",\"message\":\"" + message + "\"}");
+            spdlog::info("ALKO bridge job {}: {}", path.stem().string(), message);
             fs::remove(path, ec);
         }
     }
 private:
+    std::string last_connection_;
+    std::string last_bootstrap_;
     std::chrono::steady_clock::time_point last_check_{};
     std::chrono::steady_clock::time_point last_heartbeat_{};
 };

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,10 +42,36 @@ func TestControllerAndQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err = c.queue("cmd", "/warp START"); err == nil {
+		t.Fatal("queue accepted a command with the engine stopped")
+	}
+	c.cmd = &exec.Cmd{}
+	c.session = randomID()
+	inbox := filepath.Join(dir, "bridge", "inbox", c.session)
+	if err := os.Mkdir(inbox, 0700); err != nil {
+		t.Fatal(err)
+	}
+	heartbeatPath := filepath.Join(dir, "bridge", "telemetry", "heartbeat.json")
+	writeHeartbeat := func(session, state string) {
+		t.Helper()
+		b, _ := json.Marshal(heartbeat{Bridge: "online", Engine: "GTProxy", Session: session, Connection: state, Bootstrap: "ready"})
+		if err := os.WriteFile(heartbeatPath, b, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeHeartbeat(randomID(), "connected")
+	if _, err = c.queue("cmd", "/proxy"); err == nil {
+		t.Fatal("queue accepted a heartbeat from a different engine session")
+	}
+	writeHeartbeat(c.session, "disconnected")
+	if _, err = c.queue("lua", "print('hello')"); err == nil {
+		t.Fatal("queue accepted Lua while disconnected")
+	}
+	writeHeartbeat(c.session, "connected")
 	if _, err = c.queue("cmd", "/warp START"); err != nil {
 		t.Fatal(err)
 	}
-	files, err := os.ReadDir(filepath.Join(dir, "bridge", "inbox"))
+	files, err := os.ReadDir(inbox)
 	if err != nil || len(files) != 1 {
 		t.Fatalf("queue files %v %v", files, err)
 	}
@@ -54,6 +81,7 @@ func TestControllerAndQueue(t *testing.T) {
 	if _, err = c.queue("cmd", "/warp bad-name"); err == nil {
 		t.Fatal("invalid command accepted")
 	}
+	c.cmd, c.session = nil, ""
 	result, err := c.scanImport(map[string]any{"world": "ALKO", "foreground": []any{map[string]any{"id": float64(242), "count": float64(100)}}})
 	if err != nil {
 		t.Fatal(err)

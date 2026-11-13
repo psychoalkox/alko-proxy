@@ -1,21 +1,24 @@
 # ALKO Proxy for Windows x64
 
-1. Open the latest successful [Windows native engine build](https://github.com/psychoalkox/alko-proxy/actions/workflows/build-native-windows.yml) and extract the `ALKO-native-GTProxy-Windows-x64` artifact. Keep its DLLs, scripts and resources beside `Proxy.exe`.
-2. Open `ALKOProxy.exe` from this repository. In **Settings**, select the extracted `Proxy.exe`, save the settings and start the engine.
+1. Download the matching [Windows build](https://github.com/psychoalkox/alko-proxy/actions/workflows/build-native-windows.yml). Extract the artifact together. Open its ALKOProxy.exe and point **Settings → Engine path** at its Proxy.exe.
+2. For an isolated Windows test profile, generate a fresh TLS pair into the extracted engine's existing resources folder with engine/NEW_ENGINE_TLS_WINDOWS.ps1 -Directory <engine-resources>. The script requires OpenSSL 3 and leaves system trust and hosts unchanged. Keep key.pem private. The engine also accepts ALKO_TLS_DIR if the certificate and key live outside resources.
+3. In the test profile, trust only the generated public certificate for the test, and configure the bootstrap names used by the test client to resolve to 127.0.0.1. The upstream mechanism uses the bare and www forms of growtopia1.com and growtopia2.com. Confirm Windows resolves them locally before starting a fresh game process. Remove the test trust and hosts entries after the test. Client-specific certificate handling can still reject a local certificate.
+4. Start the matching launcher and engine. Look for **Waiting for game HTTPS**, followed by a POST to /growtopia/server_data.php with status 200 and **ENet connected**. A 502 is a bootstrap failure with a reason in the native log. If no POST appears after a fresh launch, check routing and client TLS acceptance. ENet connected means both peers established transport.
+5. Enter a world and type **/proxy** in the game's own chat. Expect **Proxy command executed successfully!** in game and **Proxy smoke-test response sent to game client** in the native log. This tests the native chat command and reply independently of the dashboard. The dashboard rejects jobs while the relay is disconnected.
 
-The build checks that the packaged engine opens its local HTTPS listener and reports a heartbeat to the ALKO bridge. Growtopia 5.61 connectivity and ban safety remain unverified.
+The Windows build tests verified loopback HTTPS, the bound ENet port and disconnected queue rejection. Growtopia 5.61 login, in-world commands on the live service and account safety still require separate verification.
 
 See [Local Windows build](LOCAL_INSTALL_WINDOWS.md) to compile from source and [Windows startup troubleshooting](DLL_STARTUP_FIX_v0.6.md) for error `0xC0000135`.
 
 ---
 
-# ALKO Proxy Standalone — v0.2 (Windows x64)
+# ALKO Proxy Standalone â€” v0.2 (Windows x64)
 
 ## Start in one click
 1. Double-click `ALKOProxy.exe` on Windows 10/11 x64.
 2. The dashboard opens in your default browser at `http://127.0.0.1:8765`.
-3. Use **World scanner → Import JSON** to try the offline scanner. Open `examples/world_scan.json` in Notepad, copy its contents, and paste into the app.
-4. Close the application from **Settings → Quit ALKO Proxy** (closing the browser tab alone does not stop the local server).
+3. Use **World scanner â†’ Import JSON** to try the offline scanner. Open `examples/world_scan.json` in Notepad, copy its contents, and paste into the app.
+4. Close the application from **Settings â†’ Quit ALKO Proxy** (closing the browser tab alone does not stop the local server).
 
 No Python, Node, Go, command prompt, game account, or other installation is required to run the **dashboard**. Windows may display a reputation warning because the open-source binary is unsigned; don't override security warnings unless you trust the package and have inspected it.
 

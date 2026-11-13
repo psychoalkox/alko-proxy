@@ -6,18 +6,34 @@ Does not download arbitrary executables or patch Windows hosts automatically.
 from pathlib import Path
 import json
 import shutil
+import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 INCLUDE = '#include "alko_bridge.hpp"'
 INSTALL = 'alko_bridge::install_emit(*script_engine_);'
 INIT = 'alko_bridge::Bridge alko_bridge;'
-POLL = 'alko_bridge.poll(*script_engine_);'
+LEGACY_POLL = 'alko_bridge.poll(*script_engine_);'
+POLL = ('alko_bridge.poll(*script_engine_, server_->is_connected(), client_->is_connected(),\n'
+        '                         web_server_->bootstrap_state());')
+
+
+def patch_connection(folder: Path) -> None:
+    diff = ROOT / 'engine' / 'native_connection.patch'
+    if subprocess.run(['git', 'apply', '--reverse', '--check', str(diff)], cwd=folder,
+                      capture_output=True).returncode == 0:
+        return
+    subprocess.run(['git', 'apply', '--check', str(diff)], cwd=folder, check=True)
+    subprocess.run(['git', 'apply', str(diff)], cwd=folder, check=True)
 
 
 def patch_core(source: str) -> str:
     if INCLUDE in source:
-        return source
+        if POLL in source:
+            return source
+        if LEGACY_POLL not in source:
+            raise ValueError('Unknown existing ALKO bridge integration')
+        return source.replace(LEGACY_POLL, POLL, 1)
     assert '#include "core.hpp"' in source, 'Unknown upstream core.hpp include'
     assert 'script_loader_->load_all();' in source, 'Unknown script loader API'
     assert 'while (running_) {' in source, 'Unknown run loop'
@@ -33,6 +49,7 @@ def patch(folder: Path):
     core = folder / 'src' / 'core' / 'core.cpp'
     if not core.exists():
         raise FileNotFoundError(f'Not an enhanced GTProxy checkout: {core}')
+    patch_connection(folder)
     original = core.read_text(encoding='utf-8')
     patched = patch_core(original)
     if original != patched:
@@ -50,10 +67,12 @@ def patch(folder: Path):
     else:
         data = {'server': {'address': 'www.growtopia1.com', 'port': 16999},
                 'client': {'game_version': '5.61', 'protocol': 225, 'dns_server': 'cloudflare'},
-                'log': {'print_message': True, 'print_game_update_packet': False, 'print_variant': False, 'print_extra': False},
+                'log': {'print_message': False, 'print_game_update_packet': False, 'print_variant': False, 'print_extra': False},
                 'command': {'prefix': '/'}}
-    data.setdefault('client', {})['game_version'] = '5.61'
-    # Protocol 225 is inherited from older releases; NOT verified for v5.61.
+    # These upstream config fields do not select the live wire protocol.
+    # Disable payload logging when setting up a build.
+    for key in ('print_message', 'print_game_update_packet', 'print_variant', 'print_extra'):
+        data.setdefault('log', {})[key] = False
     config.write_text(json.dumps(data, indent=2), encoding='utf-8')
     print('ALKO native patch installed. v5.61 compatibility remains unverified. Build and test.')
 
