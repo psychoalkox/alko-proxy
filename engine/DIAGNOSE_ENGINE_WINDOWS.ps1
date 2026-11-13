@@ -19,6 +19,5 @@ if ($dumpbin) {
 } else {
   Write-Host 'dumpbin.exe is not on PATH. Use an x64 Developer PowerShell for VS or inspect with Dependencies.exe.' -ForegroundColor Yellow
 }
-Write-Host 'Look for VCRUNTIME140.dll, VCRUNTIME140_1.dll or MSVCP140.dll first.'
-Write-Host 'Install official Microsoft x64 VC++ redistributable: https://aka.ms/vc14/vc_redist.x64.exe' -ForegroundColor Yellow
-Write-Host 'Avoid random DLL download websites.'
+Write-Host 'The v0.6 artifact omitted libssl-3-x64.dll and libcrypto-3-x64.dll.'
+Write-Host 'Use the latest verified Windows artifact and keep its DLLs beside Proxy.exe.'

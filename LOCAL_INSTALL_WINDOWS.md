@@ -1,4 +1,4 @@
-# ALKO Proxy v0.5 — Local Windows build (Lua `BadZipFile` fixed)
+# ALKO Proxy local Windows build
 
 **Status:** Dashboard executable included. Source-build instructions for the native engine included. The engine is *not* included as a precompiled binary and has **not** been live-tested against Growtopia 5.61.
 
@@ -12,12 +12,13 @@ Install the following from their official sites and restart PowerShell afterward
 | Python 3.12 | Select **Add python.exe to PATH**; `python --version` should work |
 | Git for Windows | Default installation is fine; `git --version` should work |
 | CMake | Add CMake to PATH; `cmake --version` should work |
+| OpenSSL x64 | Install the full OpenSSL 3.x SDK with its headers, import libraries and runtime DLLs under the same installation directory |
 
 Conan 2 is installed automatically by the setup script. No game account is required for compilation.
 
-## 2. Extract the complete v0.5 package
+## 2. Get the ALKO Proxy repository
 
-Extract `ALKOProxy-native-engine-build-kit-v0.5.zip`, for example into:
+Clone or extract the current ALKO Proxy repository, for example into:
 
 `C:\ALKOProxy\`
 
@@ -30,7 +31,7 @@ The following files should exist:
 
 ## 3. Build the native engine from source
 
-Open **PowerShell** (ordinary user is fine) and run:
+Open the **x64 Native Tools Command Prompt for VS 2022** and run:
 
 ```powershell
 cd C:\ALKOProxy
@@ -60,11 +61,7 @@ Double-click `C:\ALKOProxy\ALKOProxy.exe` and open `http://127.0.0.1:8765` if th
 
 ## 5. Alternatively, run the GitHub Actions build
 
-If you prefer GitHub's Windows runner, extract `ALKOProxy-Lua-BadZipFile-Fix-v0.5.zip` into your existing repository, replacing files and retaining directories, commit and push, then open **Actions → Build ALKO native GTProxy engine (Windows) → Run workflow**.
-
-Look for **Prepare Lua from verified tar.gz and build locally (Release + Debug)**. If your run still shows the old steps `Cache verified Lua...` and `Build verified Lua locally...`, the repository has not picked up the v0.5 workflow.
-
-If compilation succeeds, download `ALKO-native-GTProxy-Windows-x64` from the run's **Artifacts** section.
+Open **Actions → Build ALKO native GTProxy engine (Windows) → Run workflow**. After the **Smoke-test the packaged native engine** step passes, download `ALKO-native-GTProxy-Windows-x64` from the run's **Artifacts** section.
 
 ## Troubleshooting
 
@@ -77,4 +74,4 @@ If compilation succeeds, download `ALKO-native-GTProxy-Windows-x64` from the run
 
 ## Verification notes
 
-Seven local Python tests pass, including the extensionless-cache-to-tar.gz regression. CI YAML is parsed locally. The modified PowerShell scripts and full Windows native build were **not executed on Windows** in this environment. The Lua download is SHA-256 verified, but no blanket security or anti-ban guarantee is made.
+The Windows workflow verifies that the packaged engine opens its HTTPS listener and produces an ALKO bridge heartbeat. Growtopia 5.61 connectivity and ban safety remain unverified.

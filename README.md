@@ -1,10 +1,11 @@
-# ALKO Proxy v0.5 — native engine source-build fix
+# ALKO Proxy for Windows x64
 
-**Local install and compile:** see `LOCAL_INSTALL_WINDOWS.md`.
+1. Open the latest successful [Windows native engine build](https://github.com/psychoalkox/alko-proxy/actions/workflows/build-native-windows.yml) and extract the `ALKO-native-GTProxy-Windows-x64` artifact. Keep its DLLs, scripts and resources beside `Proxy.exe`.
+2. Open `ALKOProxy.exe` from this repository. In **Settings**, select the extracted `Proxy.exe`, save the settings and start the engine.
 
-**Fix:** Lua 5.4.6 `BadZipFile` during Conan source extraction; see `LUA_BUILD_FIX_v0.5.md`.
+The build checks that the packaged engine opens its local HTTPS listener and reports a heartbeat to the ALKO bridge. Growtopia 5.61 connectivity and ban safety remain unverified.
 
-The included `ALKOProxy.exe` is the Windows dashboard, not the live network engine. Actual v5.61 connectivity and ban safety have not been verified.
+See [Local Windows build](LOCAL_INSTALL_WINDOWS.md) to compile from source and [Windows startup troubleshooting](DLL_STARTUP_FIX_v0.6.md) for error `0xC0000135`.
 
 ---
 
@@ -61,7 +62,3 @@ go build -trimpath -ldflags "-s -w -H=windowsgui" -o ..\ALKOProxy.exe .
 The dashboard sources are embedded in the EXE using Go `embed`. Contributions can modify `source/web/` and rebuild.
 
 No affiliation with Ubisoft or Growtopia. The game may prohibit proxies, macros, autofarming and altered network traffic; ban-safe status cannot be guaranteed.
-
-
-## Engine startup status 0xc0000135
-See [DLL_STARTUP_FIX_v0.6.md](DLL_STARTUP_FIX_v0.6.md). v0.6 packages relevant native dependency DLLs and generates a dependency report.

@@ -25,9 +25,12 @@ New-Item -ItemType Directory -Path $out -Force | Out-Null
 Copy-Item -LiteralPath $BuiltExe -Destination (Join-Path $out 'Proxy.exe') -Force
 foreach ($dirname in @('scripts', 'resources')) {
   $origin = Join-Path $source $dirname
-  if (Test-Path -LiteralPath $origin) { Copy-Item -LiteralPath $origin -Destination (Join-Path $out $dirname) -Recurse -Force }
+  $target = Join-Path $out $dirname
+  New-Item -ItemType Directory -Path $target -Force | Out-Null
+  foreach ($item in Get-ChildItem -LiteralPath $origin -Force) {
+    Copy-Item -LiteralPath $item.FullName -Destination $target -Recurse -Force
+  }
 }
-New-Item -ItemType Directory -Path (Join-Path $out 'scripts') -Force | Out-Null
 Copy-Item (Join-Path $ProjectRoot 'engine\alko_features.lua') (Join-Path $out 'scripts\alko_features.lua') -Force
 $config = Join-Path $source 'config.json'
 if (Test-Path -LiteralPath $config) { Copy-Item -LiteralPath $config -Destination (Join-Path $out 'config.json') -Force }
